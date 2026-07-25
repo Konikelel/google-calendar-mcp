@@ -36,6 +36,23 @@ export function isLocalhostOrigin(origin: string): boolean {
   }
 }
 
+/**
+ * Allow non-browser requests (no Origin), localhost origins, and same-origin
+ * requests (Origin host matches the request's Host header). Same-origin lets
+ * the accounts web UI be used via a non-localhost address such as a Tailscale IP,
+ * while still blocking cross-origin/DNS-rebinding attacks.
+ */
+export function isAllowedOrigin(origin: string | undefined, requestHost: string | undefined): boolean {
+  if (!origin) return true; // non-browser requests have no Origin header
+  if (isLocalhostOrigin(origin)) return true;
+  try {
+    const u = new URL(origin);
+    return !!requestHost && u.host === requestHost;
+  } catch {
+    return false;
+  }
+}
+
 export interface HttpTransportConfig {
   port?: number;
   host?: string;
@@ -119,7 +136,7 @@ export class HttpTransportHandler {
 
       // For requests with Origin header, validate it using proper URL parsing
       // This prevents bypass via subdomains like localhost.attacker.com
-      if (origin && !isLocalhostOrigin(origin)) {
+      if (origin && !isAllowedOrigin(origin, req.headers.host)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: 'Forbidden: Invalid origin',
@@ -142,7 +159,7 @@ export class HttpTransportHandler {
 
       // Handle CORS - restrict to localhost only for security
       // HTTP mode is designed for local development/testing only
-      const allowedCorsOrigin = origin && isLocalhostOrigin(origin)
+      const allowedCorsOrigin = origin && isAllowedOrigin(origin, req.headers.host)
         ? origin
         : `http://${host}:${port}`;
       res.setHeader('Access-Control-Allow-Origin', allowedCorsOrigin);
