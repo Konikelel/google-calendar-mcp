@@ -109,11 +109,11 @@ export class GoogleCalendarMcpServer {
     }
   }
 
-  private registerTools(): void {
-    ToolRegistry.registerAll(this.server, this.executeWithHandler.bind(this), this.config);
+  private registerTools(server: McpServer = this.server): void {
+    ToolRegistry.registerAll(server, this.executeWithHandler.bind(this), this.config);
 
     // Register account management tools separately (they need special context)
-    this.registerAccountManagementTools();
+    this.registerAccountManagementTools(server);
   }
 
   /**
@@ -122,7 +122,7 @@ export class GoogleCalendarMcpServer {
    * - Doesn't require existing authentication (for 'add' action)
    * - Needs access to authServer, tokenManager, etc.
    */
-  private registerAccountManagementTools(): void {
+  private registerAccountManagementTools(server: McpServer = this.server): void {
     // Use arrow functions to keep `this` reference current after reloadAccounts()
     const self = this;
     const serverContext: ServerContext = {
@@ -137,7 +137,7 @@ export class GoogleCalendarMcpServer {
     };
 
     const manageAccountsHandler = new ManageAccountsHandler();
-    this.server.registerTool(
+    server.registerTool(
       'manage-accounts',
       {
         title: 'Manage Google Accounts',
@@ -163,8 +163,8 @@ export class GoogleCalendarMcpServer {
     );
   }
 
-  private registerPrompts(): void {
-    this.server.registerPrompt(
+  private registerPrompts(server: McpServer = this.server): void {
+    server.registerPrompt(
       'daily-agenda-brief',
       {
         title: 'Daily Agenda Brief',
@@ -215,7 +215,7 @@ export class GoogleCalendarMcpServer {
       }
     );
 
-    this.server.registerPrompt(
+    server.registerPrompt(
       'find-and-book-meeting',
       {
         title: 'Find and Book Meeting',
@@ -275,8 +275,8 @@ export class GoogleCalendarMcpServer {
     );
   }
 
-  private registerResources(): void {
-    this.server.registerResource(
+  private registerResources(server: McpServer = this.server): void {
+    server.registerResource(
       'calendar-accounts',
       'calendar://accounts',
       {
@@ -400,7 +400,7 @@ export class GoogleCalendarMcpServer {
           host: this.config.transport.host
         };
         const httpHandler = new HttpTransportHandler(
-          this.server,
+          this.createMcpServerInstance.bind(this),
           httpConfig,
           this.tokenManager
         );
@@ -431,6 +431,16 @@ export class GoogleCalendarMcpServer {
 
     process.on("SIGINT", cleanup);
     process.on("SIGTERM", cleanup);
+  }
+
+  // Factory: create a fresh McpServer with all tools/prompts/resources registered.
+  // Used per HTTP request so each MCP client gets its own McpServer (multi-client support).
+  createMcpServerInstance(): McpServer {
+    const server = new McpServer({ name: "google-calendar", version: SERVER_VERSION });
+    this.registerTools(server);
+    this.registerPrompts(server);
+    this.registerResources(server);
+    return server;
   }
 
   // Expose server for testing

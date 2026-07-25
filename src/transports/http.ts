@@ -42,16 +42,16 @@ export interface HttpTransportConfig {
 }
 
 export class HttpTransportHandler {
-  private server: McpServer;
+  private serverFactory: () => McpServer;
   private config: HttpTransportConfig;
   private tokenManager: TokenManager;
 
   constructor(
-    server: McpServer,
+    serverFactory: () => McpServer,
     config: HttpTransportConfig = {},
     tokenManager: TokenManager
   ) {
-    this.server = server;
+    this.serverFactory = serverFactory;
     this.config = config;
     this.tokenManager = tokenManager;
   }
@@ -110,12 +110,7 @@ export class HttpTransportHandler {
     const port = this.config.port || 3000;
     const host = this.config.host || '127.0.0.1';
 
-    // Configure transport for stateless mode to allow multiple initialization cycles
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined // Stateless mode - allows multiple initializations
-    });
-
-    await this.server.connect(transport);
+    // Per-request McpServer + transport is created in the handler below (multi-client support).
 
     // Create HTTP server to handle the StreamableHTTP transport
     const httpServer = http.createServer(async (req, res) => {
@@ -421,7 +416,11 @@ export class HttpTransportHandler {
       }
 
       try {
-        await transport.handleRequest(req, res);
+        const mcpServer = this.serverFactory();
+        const perRequestTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        await mcpServer.connect(perRequestTransport);
+        await perRequestTransport.handleRequest(req, res);
+        res.on("close", () => { try { perRequestTransport.close(); mcpServer.close(); } catch {} });
       } catch (error) {
         process.stderr.write(`Error handling request: ${error instanceof Error ? error.message : error}\n`);
         if (!res.headersSent) {
