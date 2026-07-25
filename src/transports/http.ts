@@ -432,6 +432,16 @@ export class HttpTransportHandler {
         return;
       }
 
+      // MCP OAuth discovery: this server is not an OAuth-protected MCP (Google
+      // OAuth is handled internally per account). Return 404 so MCP clients
+      // (e.g. openai tunnel-client) skip OAuth discovery instead of treating the
+      // catch-all's 200 as invalid metadata and marking the tunnel not ready.
+      if (req.method === 'GET' && req.url && req.url.startsWith('/.well-known/oauth-')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+
       try {
         const mcpServer = this.serverFactory();
         const perRequestTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
