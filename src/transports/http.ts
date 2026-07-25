@@ -77,14 +77,14 @@ export class HttpTransportHandler {
    * Creates an OAuth2Client configured for the given account.
    * Consolidates credential loading and redirect URI construction.
    */
-  private async createOAuth2Client(accountId: string, host: string, port: number): Promise<import('google-auth-library').OAuth2Client> {
+  private async createOAuth2Client(accountId: string, reqHost: string): Promise<import('google-auth-library').OAuth2Client> {
     const { OAuth2Client } = await import('google-auth-library');
     const { loadCredentials } = await import('../auth/client.js');
     const { client_id, client_secret } = await loadCredentials();
     return new OAuth2Client(
       client_id,
       client_secret,
-      `http://${host}:${port}/oauth2callback?account=${accountId}`
+      `http://${reqHost}/oauth2callback?account=${accountId}`
     );
   }
 
@@ -266,7 +266,7 @@ export class HttpTransportHandler {
           }
 
           // Generate OAuth URL for this account
-          const oauth2Client = await this.createOAuth2Client(accountId, host, port);
+          const oauth2Client = await this.createOAuth2Client(accountId, req.headers.host || `${host}:${port}`);
           const authUrl = this.generateOAuthUrl(oauth2Client);
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -305,7 +305,7 @@ export class HttpTransportHandler {
           }
 
           // Exchange code for tokens
-          const oauth2Client = await this.createOAuth2Client(accountId, host, port);
+          const oauth2Client = await this.createOAuth2Client(accountId, req.headers.host || `${host}:${port}`);
           const { tokens } = await oauth2Client.getToken(code);
 
           // Get user email before saving tokens
