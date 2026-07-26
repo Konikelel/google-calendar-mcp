@@ -36,22 +36,39 @@ export function isLocalhostOrigin(origin: string): boolean {
   }
 }
 
+/**
+ * Allow non-browser requests (no Origin), localhost origins, and same-origin
+ * requests (Origin host matches the request's Host header). Same-origin lets
+ * the accounts web UI be used via a non-localhost address such as a Tailscale IP,
+ * while still blocking cross-origin/DNS-rebinding attacks.
+ */
+export function isAllowedOrigin(origin: string | undefined, requestHost: string | undefined): boolean {
+  if (!origin) return true; // non-browser requests have no Origin header
+  if (isLocalhostOrigin(origin)) return true;
+  try {
+    const u = new URL(origin);
+    return !!requestHost && u.host === requestHost;
+  } catch {
+    return false;
+  }
+}
+
 export interface HttpTransportConfig {
   port?: number;
   host?: string;
 }
 
 export class HttpTransportHandler {
-  private server: McpServer;
+  private serverFactory: () => McpServer;
   private config: HttpTransportConfig;
   private tokenManager: TokenManager;
 
   constructor(
-    server: McpServer,
+    serverFactory: () => McpServer,
     config: HttpTransportConfig = {},
     tokenManager: TokenManager
   ) {
-    this.server = server;
+    this.serverFactory = serverFactory;
     this.config = config;
     this.tokenManager = tokenManager;
   }
@@ -60,14 +77,14 @@ export class HttpTransportHandler {
    * Creates an OAuth2Client configured for the given account.
    * Consolidates credential loading and redirect URI construction.
    */
-  private async createOAuth2Client(accountId: string, host: string, port: number): Promise<import('google-auth-library').OAuth2Client> {
+  private async createOAuth2Client(accountId: string, reqHost: string): Promise<import('google-auth-library').OAuth2Client> {
     const { OAuth2Client } = await import('google-auth-library');
     const { loadCredentials } = await import('../auth/client.js');
     const { client_id, client_secret } = await loadCredentials();
     return new OAuth2Client(
       client_id,
       client_secret,
-      `http://${host}:${port}/oauth2callback?account=${accountId}`
+      `http://${reqHost}/oauth2callback?account=${accountId}`
     );
   }
 
@@ -110,12 +127,7 @@ export class HttpTransportHandler {
     const port = this.config.port || 3000;
     const host = this.config.host || '127.0.0.1';
 
-    // Configure transport for stateless mode to allow multiple initialization cycles
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined // Stateless mode - allows multiple initializations
-    });
-
-    await this.server.connect(transport);
+    // Per-request McpServer + transport is created in the handler below (multi-client support).
 
     // Create HTTP server to handle the StreamableHTTP transport
     const httpServer = http.createServer(async (req, res) => {
@@ -124,7 +136,7 @@ export class HttpTransportHandler {
 
       // For requests with Origin header, validate it using proper URL parsing
       // This prevents bypass via subdomains like localhost.attacker.com
-      if (origin && !isLocalhostOrigin(origin)) {
+      if (origin && !isAllowedOrigin(origin, req.headers.host)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: 'Forbidden: Invalid origin',
@@ -147,7 +159,7 @@ export class HttpTransportHandler {
 
       // Handle CORS - restrict to localhost only for security
       // HTTP mode is designed for local development/testing only
-      const allowedCorsOrigin = origin && isLocalhostOrigin(origin)
+      const allowedCorsOrigin = origin && isAllowedOrigin(origin, req.headers.host)
         ? origin
         : `http://${host}:${port}`;
       res.setHeader('Access-Control-Allow-Origin', allowedCorsOrigin);
@@ -254,7 +266,7 @@ export class HttpTransportHandler {
           }
 
           // Generate OAuth URL for this account
-          const oauth2Client = await this.createOAuth2Client(accountId, host, port);
+          const oauth2Client = await this.createOAuth2Client(accountId, req.headers.host || `${host}:${port}`);
           const authUrl = this.generateOAuthUrl(oauth2Client);
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -293,7 +305,7 @@ export class HttpTransportHandler {
           }
 
           // Exchange code for tokens
-          const oauth2Client = await this.createOAuth2Client(accountId, host, port);
+          const oauth2Client = await this.createOAuth2Client(accountId, req.headers.host || `${host}:${port}`);
           const { tokens } = await oauth2Client.getToken(code);
 
           // Get user email before saving tokens
@@ -420,8 +432,22 @@ export class HttpTransportHandler {
         return;
       }
 
+      // MCP OAuth discovery: this server is not an OAuth-protected MCP (Google
+      // OAuth is handled internally per account). Return 404 so MCP clients
+      // (e.g. openai tunnel-client) skip OAuth discovery instead of treating the
+      // catch-all's 200 as invalid metadata and marking the tunnel not ready.
+      if (req.method === 'GET' && req.url && req.url.startsWith('/.well-known/oauth-')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+
       try {
-        await transport.handleRequest(req, res);
+        const mcpServer = this.serverFactory();
+        const perRequestTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        await mcpServer.connect(perRequestTransport);
+        await perRequestTransport.handleRequest(req, res);
+        res.on("close", () => { try { perRequestTransport.close(); mcpServer.close(); } catch {} });
       } catch (error) {
         process.stderr.write(`Error handling request: ${error instanceof Error ? error.message : error}\n`);
         if (!res.headersSent) {

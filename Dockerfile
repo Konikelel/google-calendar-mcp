@@ -1,7 +1,7 @@
 # Google Calendar MCP Server - Optimized Dockerfile
 # syntax=docker/dockerfile:1
 
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Create app user for security
 RUN addgroup -g 1001 -S nodejs && \
@@ -19,7 +19,7 @@ COPY src ./src
 COPY tsconfig.json .
 
 # Install all dependencies (including dev dependencies for build)
-RUN npm ci --no-audit --no-fund --silent
+RUN npm install --no-audit --no-fund --silent
 
 # Build the project
 RUN npm run build
